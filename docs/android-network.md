@@ -30,7 +30,7 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 ## DNS、防火墙与权限
 
-默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，请求文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时代理进程仍运行（它同时负责下文的失效连接重置），收到请求后清空两条链，不再拦截 DNS。界面在代理确认完成前显示正在应用，失败时保留提示并重试。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
+默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，请求文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时解析器进程不运行，模块自有的两条链和 OUTPUT 跳转也不存在，`127.0.0.1:1053` 留给其他本地 DNS 服务，失效连接重置同时停止（见下文“失效连接重置”）。开启请求由 supervisor 在下一次巡检（3 秒内）转成启动；界面在代理确认完成前显示正在应用，失败时保留提示并重试。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
 
 请求文件使用原子 JSON 记录 `enabled` 和随机 `generation`，包括关闭请求；不存在时默认为关闭，旧的空文件或 `1` 标记仍解释为开启。代理状态中的 `enabled` 和内部代次仅在所有受控地址族的规则操作成功后确认，区别于 status 顶层表示用户选择的 `magicDNSEnabled`。未确认的代次标为 `pending`，清理失败时增加 `applyFailed` 并重试；界面即使开关已经关闭也显示这些状态。RPC 写请求与代理应用规则共用专用 flock，获取最多等待 2 秒并响应 context 取消。LocalAPI / DoH 探测不持锁，代理应用前在锁内重新核对代次，过期计划不会重新安装规则；只有代理操作链内容，RPC 不另行执行 iptables。
 
@@ -42,7 +42,7 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 - IPv4：`iptables` `nat` 表链 `shellscaled_dns`，由 `OUTPUT -p udp --dport 53 -j shellscaled_dns` 进入。
 - IPv6：`ip6tables` `nat` 表链 `shellscaled_dns`，同样的跳转。Android GKI 内核提供 IPv6 NAT：Pixel（KernelSU）上 `/proc/net/ip6_tables_targets` 含 `REDIRECT` / `DNAT` / `TPROXY`，`ip6tables -t nat -L OUTPUT` 可用。没有 IPv6 NAT 的内核见下文“缺少 IPv6 NAT 的内核”。
-- 服务脚本创建空链和跳转，停止和卸载时删除；代理只对该链执行 `-F` / `-A`，退出时清空。链初始为空，代理未运行时不会拦截任何 DNS。
+- 服务脚本在开关打开时创建空链和跳转，开关关闭、停止和卸载时删除；代理只对该链执行 `-F` / `-A`，退出时清空。链初始为空，代理未运行时不会拦截任何 DNS。
 
 代理监听 `127.0.0.1:1053` 和 `[::1]:1053` 两个 socket，处理逻辑相同：nat `OUTPUT` 中的 REDIRECT 把本机发出的包改写到该地址族的回环地址。`[::1]` 无法绑定时记录一行日志，IPv6 链保持为空（IPv6 DNS 留在系统路径），`rules6` 为 false。运行中 `[::1]` 的读取出错退出时同样处理：刷新循环清空 IPv6 链，`rules6` 变为 false，直到代理重启。
 
@@ -131,7 +131,7 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 ### 路由
 
-选择获批准的出口节点后，tailscaled 在 table 52 计算 IPv4 / IPv6 默认路由；下文 IPv6 开关可以移除 IPv6 默认路由。默认路由存在时，13001 后备规则只接管未显式绑定网络、未受保护且不含自有 bypass 位的流量；匹配更早的 Android UID / VPN 规则的流量仍按该规则处理。显式绑定或 protected socket、tailscaled 自身 `0x10020000` socket 保留 Android 路由。出口节点离线时隧道内流量可能不可达，不能把规则安装视为端到端连接成功，也不保证所有流量都经过出口节点。开启前已建立的连接由下文“失效连接重置”在代理观测到变化后处理。
+选择获批准的出口节点后，tailscaled 在 table 52 计算 IPv4 / IPv6 默认路由；下文 IPv6 开关可以移除 IPv6 默认路由。默认路由存在时，13001 后备规则只接管未显式绑定网络、未受保护且不含自有 bypass 位的流量；匹配更早的 Android UID / VPN 规则的流量仍按该规则处理。显式绑定或 protected socket、tailscaled 自身 `0x10020000` socket 保留 Android 路由。出口节点离线时隧道内流量可能不可达，不能把规则安装视为端到端连接成功，也不保证所有流量都经过出口节点。开启前已建立的连接由下文“失效连接重置”在代理观测到变化后处理（该重置随解析器进程运行，解析器关闭时这类连接按超时处理）。
 
 已建立连接改路由到 `tailscale0` 后源地址仍是 Wi-Fi / 蜂窝地址，出口节点以 `disallowed source` 丢弃，长连接会挂起直到超时，所以代理观测到变化后重置这类连接，让 App 重连。
 
@@ -139,7 +139,7 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 ### 失效连接重置
 
-路由观测独立于可选的 DNS 拦截：MagicDNS 关闭、请求记录无效或 DNS 规则应用失败都不会阻止连接重置。重置批次在 MagicDNS 请求锁释放后执行，不会阻塞开关请求获取该锁。
+路由观测随解析器进程运行：解析器关闭时不做失效连接重置，切换出口节点后已建立的连接按超时处理；解析器运行期间，请求记录无效或 DNS 规则应用失败都不会阻止连接重置。重置批次在 MagicDNS 请求锁释放后执行，不会阻塞开关请求获取该锁。
 
 Android 在 VPN 的 UID 范围变化时（`ConnectivityService.updateVpnUidRanges` → `maybeCloseSockets`）调用 netd `destroyLiveTcpSockets`，对受影响 UID 的 TCP socket 发送 `SOCK_DESTROY`，只豁免 VPN App 自身的 UID。官方 Tailscale App 切换出口节点只是原地更新路由，已有连接被黑洞直到超时。
 

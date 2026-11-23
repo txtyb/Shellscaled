@@ -4,6 +4,8 @@ sc_cli_install() { :; }
 sc_cli_remove() { :; }
 sc_legacy_active() { return 1; }
 sc_magicdns_running() { return 1; }
+sc_magicdns_wanted() { return 1; }
+sc_magicdns_jumps() { return 1; }
 sc_magicdns_start() { :; }
 sc_magicdns_stop() { :; }
 sc_magicdns_term() { :; }

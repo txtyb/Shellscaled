@@ -178,11 +178,17 @@ sc_supervise() {
             sc_failures=0
             sc_current_daemon_identity="$SC_PID.$SC_PID_START"
             if [ "$sc_magicdns_daemon_identity" != "$sc_current_daemon_identity" ]; then
-                sc_magicdns_term
-                sc_magicdns_start || sc_log 'MagicDNS split resolver could not start.'
                 sc_magicdns_daemon_identity="$sc_current_daemon_identity"
-            else
+                sc_magicdns_term
+            fi
+            # The proxy owns 1053 for as long as it runs, so it follows the
+            # switch instead of the daemon; an off switch also clears rules
+            # left by an earlier run.
+            if sc_magicdns_wanted; then
                 sc_magicdns_start || sc_log 'MagicDNS split resolver could not start.'
+            elif sc_magicdns_jumps || sc_magicdns_running; then
+                sc_magicdns_stop
+                sc_log 'MagicDNS split resolver stopped: the preference is off.'
             fi
         elif sc_start_daemon; then
             continue

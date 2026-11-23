@@ -218,6 +218,16 @@ sc_magicdns_running() {
     return 1
 }
 
+# The resolver binds 127.0.0.1:1053 and [::1]:1053 as soon as it starts, so the
+# supervisor must only run it while the switch asks for it: a proxy kept alive
+# for an off switch holds the port of any other local DNS service. An absent
+# preference is the default off; the legacy empty and "1" forms mean on. This
+# mirrors readMagicDNSRequest in helper/magicdns_control.go.
+sc_magicdns_wanted() {
+    [ -f "$SC_DATA/magicdns-enabled" ] || return 1
+    ! grep -q '"enabled"[[:space:]]*:[[:space:]]*false' "$SC_DATA/magicdns-enabled" 2>/dev/null
+}
+
 # Module-owned DNS chains and OUTPUT jumps; the proxy fills their contents.
 sc_magicdns_rules_remove() {
     while /system/bin/iptables -w -t nat -D OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null; do :; done
